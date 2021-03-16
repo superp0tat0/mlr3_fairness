@@ -1,5 +1,5 @@
 ---
-title: "Semi-Supervised Learning on MNIST using mlr3"
+title: "Explore MNIST and COMPAS using mlr3"
 output: pdf_document
 author: Siyi Wei
 ---
@@ -11,7 +11,7 @@ library(tidyverse)
 library(caret)
 ```
 
-#Google Summer of Code 2021.
+# Google Summer of Code 2021.
 
 ## First Dataset: PCA with MNIST
 The idea of this project is rather simple. In image recognition dataset MNIST is one of the most famous benchmark tests. However, most of the machine learning models do not perform well on it since the difficulty to extract the patterns. We could apply feature engineering to improve such problems. PCA is one common used trick on reducing dimension. Since we have 784 dimensions for the dataset. We could use PCA to reduce dimension, resolve the sparsity of the dataset and apply regularization at the same time.
