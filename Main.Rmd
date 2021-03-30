@@ -87,8 +87,8 @@ head(compas)
 * We could again use the classification Tree model to predict the Two Year Recidivism. There is a 33.68% Classification error and moreover, The False Positive is 186 and False Negative is 230. FN is slightly higher.
 ```{r}
 sample_id = sample(c(1:6172), 0.8*6172)
-compas_train = compas[sample_id,]
-compas_test = compas[-sample_id,]
+compas_train = compas[sample_id,-c(8,9)]
+compas_test = compas[-sample_id,-c(8,9)]
 rownames(compas_test) = seq_len(nrow(compas_test))
 
 compas_train_backend = as_data_backend(compas_train)
@@ -132,4 +132,20 @@ prediction_black$confusion
 prediction_other$confusion
 ```
 
+```{r}
+race = unique(factor(compas$ethnicity))
+store = data.frame(matrix(ncol=2))
+colnames(store)<-c("FN", "FP")
+for(r in race){
+  current = compas[compas$ethnicity == r,]
+  con <- confusionMatrix(current$predicted, current$Two_yr_Recidivism)
+  store[r,1] = con$table[3]/(con$table[3] + con$table[4])
+  store[r,2] = con$table[2]/(con$table[1] + con$table[2])
+}
+
+store <- store[-1,]
+
+ggplot(data=store2, aes(x=race, y=value, fill=variable)) +
+geom_bar(stat="identity", position=position_dodge())
+```
 
