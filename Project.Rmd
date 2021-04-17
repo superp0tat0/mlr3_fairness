@@ -1,0 +1,312 @@
+---
+title: "Research on bias corrected COMPAS dataset predictions using hierarchical model"
+output: 
+  pdf_document:
+    latex_engine: xelatex
+fontsize: 12pt
+
+author: Siyi Wei
+abstract: "Fairness is one of the most common problem about prediction algorithms but has been ignored for most of the time. In this paper we will discuss the algorithm fairness of one popular algorithm used to evaluate the likelihood of defendant becoming a recidivist: COMPAS. COMPAS has been used by U.S. courts since 2016. We want to address such problems and demonstrate some potentinal solutions to correct algorithmic bias."
+---
+
+```{r, include = F}
+library(mlr3)
+library(mlr3pipelines)
+library(tidyverse)
+library(caret)
+library(reshape2)
+library(fairness)
+library(ggrepel)
+library(forcats)
+library(scales)
+library(rstan)
+library(MASS)
+```
+
+```{r, include = F}
+data("compas")
+unprocessed_data <- read.csv("./COMPAS/cox-violent-parsed.csv")
+```
+```{r global-options, include=FALSE}
+knitr::opts_chunk$set(fig.width=12, fig.height=8, warning=FALSE, message=FALSE)
+```
+# Introduction
+COMPAS (Correctional Offender Management Profiling for Alternative Sanctions) is a popular commercial algorithm used by judges and parole officers for scoring criminal defendant’s likelihood of reoffending (recidivism). It has been shown that the algorithm is biased on race which is in favor of white defendants, and against black inmates. It is also biased on gender which is in favor of female defendants and against male defendants. Based on a 2 year follow up study (i.e who actually committed crimes or violent crimes after 2 years). The pattern of mistakes, as measured by precision/sensitivity is notable.
+
+Such fairness problems are interesting and related to many social problems. As a quantitative method, its purpose is to provide objective suggestions to the users. However we find it instead provided the opposite suggestions in EDA. The solution of this problem could potentially contribute to the data fairness in many related situations. In this paper we want to make use of the prior information of the potential hierarchical model. We will compare the subgroup fairness problems and finetune hyper-parameters to correct the biases we founded in the COMPAS dataset. To achieve our goal, we would like to discuss our initial findings in Exploratory Data Analysis.
+
+# Exploratory Data Analysis and Datasets
+The original dataset contains 18316 obervations with 40 varaibles. Most of the variables contain personal information which is not useful for our analysis. Such as names, compas screen date and other similar variables. Most of the missing values belong to those variables. We instead used the cleaned dataset from fairness package, the cleaning process includes removing some incomplete observations, rename variables and categorize continuous variables. The sampled processed dataset contains the 6172 observations with 9 variables. 6 of them are the covariates like gender, race, age group, misdemeanor and other factors. 2 of them are the predicted variables by COMPAS algorithm, the predicted probabilities and predicted values for recidivism. The last one is the tracked real recidivism status after two years.
+
+We first notice the dataset is imbalanced on gender. 18\% of the observations are female and the rest are male. For the ethnicity, 53\% of them are African American, the other races include Caucasian, Hispanic and others. The imbalanced dataset is one common reason the statistical inference could lead to a biased algorithm. We need to be careful to analyze the bias on gender during modeling process. For the ethnicity we could instead treat it as a binary variable, where 1 represents African American and 0 represents the other races. By this correction we could then balance the ethnicity.
+
+```{r, echo=FALSE, figures-side, fig.show="hold", out.width="50%"}
+gender <- unprocessed_data %>%
+  group_by(sex) %>%
+  summarize(count=n()) %>%
+  arrange(desc(count)) %>%
+  mutate(prop = percent(count / sum(count)))
+
+race <- unprocessed_data %>%
+  group_by(race) %>%
+  summarize(count=n()) %>%
+  arrange(desc(count)) %>%
+  mutate(prop = percent(count / sum(count)))
+
+pie1 <- ggplot(race, aes(x = "", y = count, fill = fct_inorder(race))) +
+       geom_bar(width = 1, stat = "identity") +
+       coord_polar("y", start = 0) +
+       geom_label_repel(aes(label = prop), size=2.5, show.legend = F, nudge_x = 1) +
+       guides(fill = guide_legend(title = "Group"))
+pie1
+
+pie2 <- ggplot(gender, aes(x = "", y = count, fill = fct_inorder(sex))) +
+       geom_bar(width = 1, stat = "identity") +
+       coord_polar("y", start = 0) +
+       geom_label_repel(aes(label = prop), size=2.5, show.legend = F, nudge_x = 1) +
+       guides(fill = guide_legend(title = "Group"))
+pie2
+```
+
+For their ages, which is defined as their age when the defendents commit the crimes. We observe the African American group has a significant smaller age then the other group. Following the instruction of the dataset to simplify the age distribution. We split them into three different age groups: Below 25 Years old, Above 45 Years old or between those two.
+For the misdemeanor, which is defined as a binary variable indicate the case is misdemeanor or not. We could see the African American group has a slightly higher felony offence than the other groups, almost twice compare to the proportion of its misdemeanor. The fairness problems are hidden in the datasets already. We will next analyze the fairness of original COMPAS algorithms and use classification trees to verify such fairness problems.
+For the number of priors, which is defined as the count of prior commitment and normalized as 0 mean and identity deviation. We could see the African American has a slightly higher number of priors then the other race. The native American and Asian has too few cases so their distribution are not representative.
+For the genders, which is defined as a binary variable indicate the gender of the defendent. We could see African American group has higher male proportion than some of the ethnicities. However, the difference is not significant.
+By the analysis of the covariates. We could see the predicator distribution of African American group is different than the other races. The difference in distribution could might be the reasons why the preditions are biased. With those suspicions we will further design the model to correct such bias problems.
+
+```{r, echo=FALSE, figures-side2, fig.show="hold", out.width="50%"}
+misdemeanor <- compas %>%
+  group_by(ethnicity, Misdemeanor) %>%
+  summarise(count = n()) %>%
+  group_by(ethnicity) %>%
+  mutate(countT = sum(count)) %>%
+  group_by(Misdemeanor, add=T) %>%
+  mutate(perc = 100*count/countT)
+
+gender <- compas %>%
+  group_by(ethnicity, Female) %>%
+  summarise(count = n()) %>%
+  group_by(ethnicity) %>%
+  mutate(countT = sum(count)) %>%
+  group_by(Female, add=T) %>%
+  mutate(perc = 100*count/countT)
+
+ggplot(unprocessed_data, aes(race, age)) + geom_violin(aes(fill = race))
+ggplot(misdemeanor, aes(x = ethnicity, y=perc, fill = Misdemeanor)) +geom_bar(stat="identity",position='dodge')
+ggplot(compas, aes(ethnicity, Number_of_Priors)) + geom_violin(aes(fill = ethnicity))
+ggplot(gender, aes(x = ethnicity, y=perc, fill = Female)) +geom_bar(stat="identity",position='dodge')
+```
+```{r, include=FALSE, warning=FALSE}
+sample_id = sample(c(1:6172), 0.8*6172)
+compas_train = compas[sample_id,-c(8,9)]
+compas_test = compas[-sample_id,-c(8,9)]
+rownames(compas_test) = seq_len(nrow(compas_test))
+
+compas_train_backend = as_data_backend(compas_train)
+compas_test_backend = as_data_backend(compas_test)
+
+black_id = as.numeric(rownames(compas_test[compas_train$ethnicity == "African_American",]))
+black_id2 = as.numeric(rownames(compas_test[compas_test$ethnicity == "African_American",]))
+compas_black_backend = as_data_backend(compas_train[black_id,])
+compas_black_backend2 = as_data_backend(compas_test[black_id2,])
+
+task_train_COMPAS <- TaskClassif$new(id = "train", backend = compas_train_backend, target = "Two_yr_Recidivism")
+task_test_COMPAS <- TaskClassif$new(id = "test", backend = compas_test_backend, target = "Two_yr_Recidivism")
+
+task_train_COMPAS_black <- TaskClassif$new(id = "test", backend = compas_black_backend, target = "Two_yr_Recidivism")
+task_test_COMPAS_black <- TaskClassif$new(id = "test", backend = compas_black_backend2, target = "Two_yr_Recidivism")
+
+#Classification Tree for all races
+learner = lrn("classif.rpart", cp = .01)
+learner$train(task_train_COMPAS_black)
+prediction <- learner$predict(task_test_COMPAS)
+confusionMatrix(prediction$response, prediction$truth)
+
+#Classification Tree for Arican American
+learner_black = lrn("classif.rpart", cp = .01)
+learner_black$train(task_train_COMPAS_black)
+prediction_black <- learner_black$predict(task_test_COMPAS_black)
+confusionMatrix(prediction_black$response, prediction_black$truth)
+
+#Logistic Regression for all races
+logis_model <- glm(Two_yr_Recidivism ~ ., data = compas_train, family = binomial)
+prediction_logit <- logis_model %>% 
+  predict(compas_test, type = "response")
+prediction_logit <- as.factor(ifelse(prediction_logit > 0.5, 1, 0))
+```
+We first analyze the accuracy of the original COMPAS algorithms. Since this is a business algorithm, we cannot directly figure out its working principle. However, we could observe the fairness problems by analyze its accuracy, sensitivity and specificity. The overall accuracy of COMPAS model is about 67\%. We could use classification tree and logistic regression to give similar predictive distributions. The false negative and false positive are quite balanced balanced, we include the prediction of classification tree and logistic regression model in the following tables for comparison.
+
+Since the datasets contains all the prediction for avaliable observations. We used all of them to generate the following statistics. However, for our own choice of models we could use cross validation to calculate the statistics more accurately. For the following table we could observe the classification tree's performance is more similar to the COMPAS algorithms. Although their accuracy are really close, the logistic regression instead have a imbalanced false positive rate and false negative rate in the datasets.
+
+| Models  | Accuracy  | False Negative  | False Positive  | Sensitivity  | Specificity |
+|---|---|---|---|---|---|
+| COMPAS  | 67%  |36.52%|30.06%| 69.94%  | 63.47%  |
+| Classification Tree| 64.7%  |37.05% | 33.69%| 66.3%  | 62.9%  |
+| Logistic Regression | 67.21%  | 41.95% |25.36%| 74.63%|58.05%|
+```{r, include = F}
+compas$Two_yr_Recidivism = as.integer(compas$Two_yr_Recidivism) - 1
+compas$Two_yr_Recidivism = as.factor(compas$Two_yr_Recidivism)
+compas$predicted = as.factor(compas$predicted)
+prediction_truth = as.factor(as.integer(prediction$truth) - 1)
+
+confusionMatrix(compas$predicted, compas$Two_yr_Recidivism)
+confusionMatrix(prediction$response, prediction$truth)
+confusionMatrix(prediction_logit, prediction_truth)
+```
+So overall we could see for the classification tree and COMPAS model, the fairness of the algorithm is acceptable. If we differentiate the defendents by ethnicity, the Afican-American has prediction error to be 34% and the other ethnicity has prediction error to be 33.3%. Which is quite close. In the opposite, we could see there is a significant difference in False Positive Rate and False Negative rate. For African-American, the FP rate is 41.23% and the FN rate is 27.48%. For the other race, the FP rate is 17% and the FN rate is 57.14%. Those evidence indicates the algorithm is biased in ethnicity and has a fairness problem. The african american group is the only race had higher false positive rate. Consider the Afican American took half of the overall defendents. The difference is huge compare to the other races. We could visualize such differences from the following plot.
+```{r, echo=F}
+race = unique(factor(compas$ethnicity))
+store = data.frame(matrix(ncol=3))
+colnames(store)<-c("FN", "FP")
+compas$Two_yr_Recidivism <- as.factor(as.numeric(compas$Two_yr_Recidivism) - 1)
+compas$predicted <- as.factor(compas$predicted)
+for(r in race){
+  current = compas[compas$ethnicity == r,]
+  con <- confusionMatrix(current$predicted, current$Two_yr_Recidivism)
+  store[r,1] = con$table[3]/(con$table[3] + con$table[4])
+  store[r,2] = con$table[2]/(con$table[1] + con$table[2])
+}
+
+
+store <- store[-1,]
+store$race = rownames(store)
+store = melt(store)
+
+ggplot(data=store, aes(x=race, y=value, fill=variable)) +
+geom_bar(stat="identity", position=position_dodge())
+```
+
+# Methodology
+
+We have raised the fairness problem with COMPAS dataset. But does this fairness problem exist if we only include the African American group. To answer this question, we trained a classification tree model with only African American group. Again, we used cross validation to assess the performance of our model. The reported validation and train error could be viewed in the following table.
+
+|Models   | Accuracy  | False Negative  | False Positive  | Sensitivity  | Specificity |
+|---|---|---|---|---|---|
+| CTree Train  | 66.46%  |37.88%|28.93%| 71.06%  | 62.12%  |
+| CTree Test | 69.98%  |31.5% | 28.57%| 71.43%  | 68.49%  |
+
+So if we model for the Arifan American subgroup directly, we could see there is no algorithmic bias caused by the model. We could further assume some hyper parameters were ignored in original classification tree model. Consider the similarity of classification tree model and COMPAS algorithm, those hyperparameters might also been ignored by the COMPAS algorithm. If the model could include those hyperparameter, the fairness for different ethnicities might able to be corrected.
+But we need to be careful for the subgroup fairness. Because the other groups do not guarantee the equality of false positive and false negative rates. We could see from the following chart that all the other subgroups has false negative rate significantly larger than the false positive rate.
+From the backgrounds of applied statistics, the hierachical model is one of the most common architecture to solve such problems. We first introduce the vanilla logistic regression model, and compare to hierarchical logistic regression model. They have the similar structure. But the hierarchical logistic regression involved the hyperparameter $\beta^*$.
+
+# Model and Validation
+Since we choose logistic regression as our basic model. We would define $p_i$ to be the probability of the i-th defendent commit recidivism in two years. Then we could built diffrent kind of logistic models.
+We have already seen the logistic model with ethnicity is significantly biased in EDA. So for the first model, we build another simple logistic Regression model disgard ethnicity:
+$$\text{logit}(p_i) = \beta_0 + \text{Prior} \times\beta_1 + \text{Age}_{<25} \times \beta_2 + \text{Age}_{>45} \times \beta_3 + \text{Gender} \times \beta_4 + \text{Misdemeanor} \times \beta_5$$
+
+For the second one, we define a binary variable to split the dataset by ethnicity is equal to African American or not.
+$$\text{logit}(p_i) = \beta_0 + \text{Prior} \times\beta_1 + \text{Age}_{<25} \times \beta_2 + \text{Age}_{>45} \times \beta_3 + \text{Gender} \times \beta_4 + \text{Misdemeanor} \times \beta_5 + \text{binaryE} \times \beta^*$$
+We would not choose include binary predicator and ethnicity at the both time due to colinearity. Which is also been verified that its performace is worse than the first model. So we would choose our basic model to be the second one.
+# TODO: Some results from the prediction, how we validate the model and etc
+We have realized using a binary variable could significantly improve the subgroup accuracy. However, we discard some useful information of ethnicity that could potentially help predictions. Motivated by the course materials. We could instead create a three stage hierachical model defined below, where the second stage indicate the sample distributions for the race and the third stage indicate where the it is african american or not. In the following formulations, $\mu_1$ is the prior for african american and $\mu_2$ is the prior for non african american. We could also assume different sigma for different race but it would be too computational expensive.
+$$\text{logit}(p_i) = \beta_0 + \text{Prior} \times\beta_1 + \text{Age}_{<25} \times \beta_2 + \text{Age}_{>45} \times \beta_3 + \text{Gender} \times \beta_4 + \text{Misdemeanor} \times \beta_5 + \text{race} \times \beta^*$$
+$$\text{race} \sim N(\begin{bmatrix} \mu_{1} \\ \mu_{2}\end{bmatrix},\begin{bmatrix} 1 & 0 \\ 0 & 1\end{bmatrix}), \ \ \ \ \ \mu_{1} \sim N(0,1),\mu_{2} \sim N(0,1)$$
+```{r, include = FALSE}
+#The train test split ratio is 4:1
+sample_id = sample(c(1:6172), 0.8*6172)
+#Add the variable needed and format the dataframe
+compas$isblack <- ifelse(compas$ethnicity == "African_American", 1, 0)
+compas$Two_yr_Recidivism <- as.factor(as.numeric(compas$Two_yr_Recidivism) - 1)
+
+
+compas_train = compas[sample_id,-c(8,9)]
+compas_test = compas[-sample_id,-c(8,9)]
+rownames(compas_test) = seq_len(nrow(compas_test))
+
+#Test whether the model would be fair if only fit african american
+black_id = as.numeric(rownames(compas_test[compas_train$ethnicity == "African_American",]))
+black_id2 = as.numeric(rownames(compas_test[compas_test$ethnicity == "African_American",]))
+compas_black_backend = as_data_backend(compas_train[black_id,])
+compas_black_backend2 = as_data_backend(compas_test[black_id2,])
+
+task_train_COMPAS_black <- TaskClassif$new(id = "test", backend = compas_black_backend, target = "Two_yr_Recidivism")
+task_test_COMPAS_black <- TaskClassif$new(id = "test", backend = compas_black_backend2, target = "Two_yr_Recidivism")
+
+#Classification Tree for Arican American
+learner_black = lrn("classif.rpart", cp = .01)
+learner_black$train(task_train_COMPAS_black)
+
+prediction_black_train <- learner_black$predict(task_train_COMPAS_black)
+confusionMatrix(prediction_black_train$response, prediction_black_train$truth)
+
+prediction_black <- learner_black$predict(task_test_COMPAS_black)
+confusionMatrix(prediction_black$response, prediction_black$truth)
+
+subfair_plot <- function(model){
+  pred <- predict(model, newdata = compas_test, type="response")
+  compas_test$response <- ifelse(pred >=0.5, 1, 0)
+  compas_test$response <- as.factor(compas_test$response)
+  
+  race = unique(factor(compas_test$ethnicity))
+  store = data.frame(matrix(ncol=3))
+  colnames(store)<-c("FN", "FP")
+  
+  for(r in race){
+    current = compas_test[compas_test$ethnicity == r,]
+    con <- confusionMatrix(current$response, current$Two_yr_Recidivism)
+    store[r,1] = con$table[3]/(con$table[3] + con$table[4])
+    store[r,2] = con$table[2]/(con$table[1] + con$table[2])
+  }
+  
+  
+  store <- store[-1,]
+  store$race = rownames(store)
+  store = melt(store)
+  
+  print(ggplot(data=store, aes(x=race, y=value, fill=variable)) +
+    geom_bar(stat="identity", position=position_dodge()))
+  
+  return(confusionMatrix(compas_test$response, compas_test$Two_yr_Recidivism))
+}
+```
+
+```{r, include = F}
+logit_withoutE <- glm(Two_yr_Recidivism ~ . - ethnicity - isblack, data = compas_train, family = "binomial")
+logit_binaryE <- glm(Two_yr_Recidivism ~ . - ethnicity, data = compas_train, family = "binomial")
+```
+
+```{r}
+subfair_plot(logit_withoutE)
+subfair_plot(logit_binaryE)
+```
+
+```
+#Create three stan model. 
+#The naive logistic regression and the hierachical logistic regression
+N <- length(compas_train$Two_yr_Recidivism)
+y <- as.numeric(compas_train$Two_yr_Recidivism) - 1
+R <- length(unique(compas_train$ethnicity))
+
+race <- as.numeric(compas_train$ethnicity)
+above_45 <- as.numeric(compas_train$Age_Above_FourtyFive) - 1
+below_25 <- as.numeric(compas_train$Age_Below_TwentyFive) - 1
+misdemeanor <- as.numeric(compas_train$Misdemeanor) - 1
+priors <- compas_train$Number_of_Priors
+gender <- as.numeric(compas_train$Female) - 1
+
+data <- list(N = N,
+             y = y,
+             R = R,
+             race = race,
+             above_45 = above_45,
+             below_25 = below_25,
+             misdemeanor = misdemeanor,
+             priors = priors,
+             gender = gender)
+
+fit_simple_logistic <- stan(file = "./naive_logistic.stan", data = data, iter = 500)
+
+fit_simple_logistic@stanmodel@dso <- new("cxxdso")
+saveRDS(fit_simple_logistic, file = "simple_logistic.rds")
+new <- readRDS("simple_logistic.rds")
+
+#Naive Logistic Regression
+
+#Hierachical Logistic Regression
+```
+
+# Results
+
+# Discussion
+
+# References

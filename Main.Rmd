@@ -1,5 +1,5 @@
 ---
-title: "Explore MNIST and COMPAS using mlr3"
+title: "Explore COMPAS"
 output: pdf_document
 author: Siyi Wei
 ---
@@ -9,72 +9,11 @@ library(mlr3)
 library(mlr3pipelines)
 library(tidyverse)
 library(caret)
+library(reshape2)
 ```
 
-# Google Summer of Code 2021.
-
-## First Dataset: PCA with MNIST
-The idea of this project is rather simple. In image recognition dataset MNIST is one of the most famous benchmark tests. However, most of the machine learning models do not perform well on it since the difficulty to extract the patterns. We could apply feature engineering to improve such problems. PCA is one common used trick on reducing dimension. Since we have 784 dimensions for the dataset. We could use PCA to reduce dimension, resolve the sparsity of the dataset and apply regularization at the same time.
-In this project, we want to do a simple experiment. Since the data matrix is sparse. We want to apply PCA transformation on the dataset and compare the results with not apply PCA transformation.
-
-
-## Experiment: Compare estimations from PCA and naive model
-* First we want to explore the performance of the naive classification algorithm on MNIST datasets. We could see even though the prediction is better than random guessing. But the classification errors are still large.
-* We want to further explore the model performance using PCA, we first extract the 24 PCs from the datasets and use it as the features in the classification model. The model performance decreased. But we would like to know why by taking a closer look in the subgroup.
-* For some of the sub-group (1,2,3) the model accuracy increases significantly. Some of them stay unchanged and some of them decrease significantly. For example, after the PCA transformation. The model is more likely to classify 9 as 4 or 2 as 6.
-* We could potentially resolve this issue by increasing the number of PCs. However it could not perform significantly better than the original dataset since the tree model we have chosen.
-
-```{r}
-#Create the Data Backend
-sample_id = sample(c(1:10000), 0.8*10000)
-dataset_mnist <- read_csv("./MNIST/train.csv")[1:10000,]
-dataset_mnist$label = as.factor(dataset_mnist$label)
-
-train <- dataset_mnist[sample_id,]
-train_backend <- as_data_backend(train)
-test <- dataset_mnist[-sample_id,]
-test_backend <- as_data_backend(test)
-
-#Create the Task
-task_train_MNIST <- TaskClassif$new(id = "train", backend = train, target = "label")
-task_test_MNIST <- TaskClassif$new(id = "test", backend = test, target = "label")
-
-#Create the pipeline operations
-scale_po = po("scale")
-pca_po = mlr_pipeops$get("pca", param_vals = list(rank. = 24))
-learner_po =  mlr_pipeops$get("learner", mlr_learners$get("classif.rpart"))
-
-# Create the model
-pca_learner = scale_po %>>% pca_po %>>% learner_po
-learner = scale_po %>>% learner_po
-```
-
-
-```{r}
-# Train the naive classification tree model
-learner$train(task_train_MNIST)
-prediction <- learner$predict(task_test_MNIST)
-
-# evaluate the performance
-sum(prediction$classif.rpart.output$truth == prediction$classif.rpart.output$response)/2000
-
-confusionMatrix(prediction$classif.rpart.output$truth, prediction$classif.rpart.output$response)$table
-```
-
-
-```{r}
-#Train the PCA classification tree model and evaluate the performance
-pca_learner$train(task_train_MNIST)
-prediction2 <- pca_learner$predict(task_test_MNIST)
-
-sum(prediction2$classif.rpart.output$truth == prediction2$classif.rpart.output$response)/2000
-
-confusionMatrix(prediction2$classif.rpart.output$truth, prediction2$classif.rpart.output$response)$table
-```
-
-## Second Dataset: Explore COMPAS
-
-For the Second part. We would like to explore the dataset COMPAS using mlr3 pipeline operations. I used the pre_processed COMPAS dataset from the fairness package.
+## Explore COMPAS
+We would like to explore the dataset COMPAS using mlr3 pipeline operations. I used the pre_processed COMPAS dataset from the fairness package.
 Here I quote the introduction of COMPAS datasets "COMPAS (Correctional Offender Management Profiling for Alternative Sanctions) is a popular commercial algorithm used by judges and parole officers for scoring criminal defendant’s likelihood of reoffending (recidivism). It has been shown that the algorithm is biased in favor of white defendants, and against black inmates, based on a 2 year follow up study (i.e who actually committed crimes or violent crimes after 2 years). The pattern of mistakes, as measured by precision/sensitivity is notable."
 In the following study we want to explore whether the algorithm will give a biased prediction
 
@@ -84,7 +23,7 @@ data("compas")
 head(compas)
 ```
 
-* We could again use the classification Tree model to predict the Two Year Recidivism. There is a 33.68% Classification error and moreover, The False Positive is 186 and False Negative is 230. FN is slightly higher.
+* We could again use the classification Tree model to predict the Two Year Recidivism. The results are quite similar to the raw scores from COMPAS algorithm. There is a 33.68% Classification error and moreover, The False Positive is 186 and False Negative is 230. FN is slightly higher.
 ```{r}
 sample_id = sample(c(1:6172), 0.8*6172)
 compas_train = compas[sample_id,-c(8,9)]
@@ -94,14 +33,26 @@ rownames(compas_test) = seq_len(nrow(compas_test))
 compas_train_backend = as_data_backend(compas_train)
 compas_test_backend = as_data_backend(compas_test)
 
+black_id = as.numeric(rownames(compas_test[compas_train$ethnicity == "African_American",]))
+black_id2 = as.numeric(rownames(compas_test[compas_test$ethnicity == "African_American",]))
+compas_black_backend = as_data_backend(compas_train[black_id,])
+compas_black_backend2 = as_data_backend(compas_test[black_id2,])
+
 task_train_COMPAS <- TaskClassif$new(id = "train", backend = compas_train_backend, target = "Two_yr_Recidivism")
 task_test_COMPAS <- TaskClassif$new(id = "test", backend = compas_test_backend, target = "Two_yr_Recidivism")
 
-learner = lrn("classif.rpart", cp = .01)
-learner$train(task_train_COMPAS)
-prediction <- learner$predict(task_test_COMPAS)
+task_train_COMPAS_black <- TaskClassif$new(id = "test", backend = compas_black_backend, target = "Two_yr_Recidivism")
+task_test_COMPAS_black <- TaskClassif$new(id = "test", backend = compas_black_backend2, target = "Two_yr_Recidivism")
 
+learner = lrn("classif.rpart", cp = .01)
+learner$train(task_train_COMPAS_black)
+prediction <- learner$predict(task_test_COMPAS)
 confusionMatrix(prediction$response, prediction$truth)
+
+learner_black = lrn("classif.rpart", cp = .01)
+learner_black$train(task_train_COMPAS_black)
+prediction_black <- learner_black$predict(task_test_COMPAS_black)
+confusionMatrix(prediction_black$response, prediction_black$truth)
 ```
 * We want to ask the next question then. Among those wrong predictions. Will ethnicity or gender play a role?
 * From gender. We could see we have a quite imbalanced dataset where male is more than female. This could potentially be a problem. Other than that, the prediction error for male is 34.33% and the prediction error for females is 30.96%. The prediction on females is more accurate than male.
@@ -109,6 +60,7 @@ confusionMatrix(prediction$response, prediction$truth)
 ```{r}
 #The male and female test datasets
 male_id = as.numeric(rownames(compas_test[compas_test$Female == "Male",]))
+learner$train()
 female_id = as.numeric(rownames(compas_test[compas_test$Female == "Female",]))
 
 prediction_male <- learner$predict(task_test_COMPAS, row_ids = male_id)
@@ -132,10 +84,13 @@ prediction_black$confusion
 prediction_other$confusion
 ```
 
+* For different race subgroup. We could analyze their corresponding FP rates and FN rates. We could see Arican American is the only race group that has FN rates larger than FP rates. Maybe we could use hierarchical model to solve this problem? By fine tune the hyper parameters.
 ```{r}
 race = unique(factor(compas$ethnicity))
-store = data.frame(matrix(ncol=2))
+store = data.frame(matrix(ncol=3))
 colnames(store)<-c("FN", "FP")
+compas$Two_yr_Recidivism <- as.factor(as.numeric(compas$Two_yr_Recidivism) - 1)
+compas$predicted <- as.factor(compas$predicted)
 for(r in race){
   current = compas[compas$ethnicity == r,]
   con <- confusionMatrix(current$predicted, current$Two_yr_Recidivism)
@@ -143,9 +98,22 @@ for(r in race){
   store[r,2] = con$table[2]/(con$table[1] + con$table[2])
 }
 
-store <- store[-1,]
 
-ggplot(data=store2, aes(x=race, y=value, fill=variable)) +
+store <- store[-1,]
+store$race = rownames(store)
+store = melt(store)
+
+ggplot(data=store, aes(x=race, y=value, fill=variable)) +
 geom_bar(stat="identity", position=position_dodge())
+```
+
+```{r}
+compas$Two_yr_Recidivism_01 <- ifelse(compas$Two_yr_Recidivism == 'yes', 1, 0)
+equal_odds(data    = compas,
+           outcome = 'Two_yr_Recidivism_01',
+           probs   = 'probability',
+           group   = 'ethnicity',
+           cutoff  = 0.5,
+           base    = 'Caucasian')
 ```
 
